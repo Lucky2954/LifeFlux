@@ -1,0 +1,73 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "description": "$string:module_desc",
+    "mainElement": "EntryAbility",
+    "deviceTypes": [
+      "phone"
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    "abilities": [
+      {
+        "name": "EntryAbility",
+        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:layered_image",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background", // 启动页也设为透明
+        "exported": true,
+        "launchType": "singleton", // 建议设为单例模式，防止多次打开
+        "supportWindowMode": ["floating", "fullscreen"], // 重点：允许悬浮模式
+        "skills": [
+          {
+            "entities": [
+              "entity.system.home"
+            ],
+            "actions": [
+              "ohos.want.action.home"
+            ]
+          }
+        ],
+        // ✅ 2. 新增：声明后台模式 (这里选 dataTransfer 比较容易通过)
+        "backgroundModes": [
+          "audioPlayback"
+        ],
+      }
+    ],
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.INTERNET"
+      },
+      // ✅ 1. 新增：申请后台保活权限
+      {
+        "name": "ohos.permission.KEEP_BACKGROUND_RUNNING"
+      },
+      // ✅✅✅ 新增：震动权限
+      {
+        "name": "ohos.permission.VIBRATE"
+      },
+      {
+        "name": "ohos.permission.PUBLISH_AGENT_REMINDER" // ✅ 新增：系统代理提醒权限
+      },
+
+    ],
+    "extensionAbilities": [
+      {
+        "name": "EntryBackupAbility",
+        "srcEntry": "./ets/entrybackupability/EntryBackupAbility.ets",
+        "type": "backup",
+        "exported": false,
+        "metadata": [
+          {
+            "name": "ohos.extension.backup",
+            "resource": "$profile:backup_config"
+          }
+        ],
+      }
+    ]
+  }
+}
