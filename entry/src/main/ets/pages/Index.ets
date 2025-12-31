@@ -53,7 +53,6 @@ struct Index {
     this.allCategories = await FeishuService.getCategories();
     try {
       await notificationManager.requestEnableNotification();
-      await notificationManager.addSlot(notificationManager.SlotType.SOCIAL_COMMUNICATION);
     } catch (err) {
       console.error('请求通知权限失败', JSON.stringify(err));
     }
@@ -76,6 +75,8 @@ struct Index {
     if (this.isServiceRunning && this.currentState !== AppState.TIMER_RUNNING) {
        this.currentState = AppState.TIMER_RUNNING;
     }
+    // 🟢 唤醒计时驱动，确保回到前台时计时能立即继续
+    GuardianService.getInstance().ensureRunning();
   }
 
   onBackPress() {
@@ -123,18 +124,8 @@ struct Index {
         .fontWeight(FontWeight.Bold)
         .layoutWeight(1)
         .textAlign(TextAlign.Center)
-        // .padding({ right: 40 }) // ❌ 移除这个 padding，因为右边要有按钮了
+        .padding({ right: 40 }) // 🟢 恢复 padding，平衡左侧按钮宽度实现居中
         .fontColor('#445460')
-
-      // ✅ 新增：日志调试按钮
-      Button('🐞')
-        .type(ButtonType.Circle)
-        .backgroundColor(Color.Transparent)
-        .width(40)
-        .height(40)
-        .onClick(() => {
-           this.showLogDialog();
-        })
     }
     .width('100%').height(50).alignItems(VerticalAlign.Center).backgroundColor('#BCD7F2').borderRadius({ topLeft: 24, topRight: 24 })
   }
@@ -237,9 +228,15 @@ struct Index {
 
         Button('开始计时').backgroundColor('#677C95').onClick(() => {
           const mins = parseInt(this.estimatedTime) || 25;
+          const targetSeconds = mins * 60;
           this.startTime = new Date().getTime();
+          
+          // 🟢 关键：先在本地同步设置，防止 UI 闪烁 0:00
+          AppStorage.setOrCreate('GS_SecondsRemaining', targetSeconds);
+          AppStorage.setOrCreate('GS_TotalSeconds', targetSeconds);
+          
           // ✅ 启动 Service 计时
-          GuardianService.getInstance().startTimer(mins * 60);
+          GuardianService.getInstance().startTimer(targetSeconds);
           this.currentState = AppState.TIMER_RUNNING;
         })
       }.layoutWeight(1).justifyContent(FlexAlign.Center).width('100%')
@@ -268,17 +265,37 @@ struct Index {
 
         Button('终止').backgroundColor('#445460')
           .onClick(() => {
-            this.showEndConfirmDialog(
-              '终止确认',
-              '确定要提前结束当前任务吗？',
-              '确认结束',
-              '取消',
-              () => {
-                GuardianService.getInstance().stopTimer(false);
-                this.currentState = AppState.FINISH_INPUT;
-              },
-              () => {} // 取消则无操作
-            );
+            if (this.secondsRemaining > 0) {
+              // 场景1：计时未结束，手动终止
+              this.showEndConfirmDialog(
+                '终止确认',
+                '是否提前结束任务？',
+                '结束任务',
+                '取消',
+                () => {
+                  GuardianService.getInstance().stopTimer(false);
+                  this.currentState = AppState.FINISH_INPUT;
+                },
+                () => {} // 取消则无操作，对话框关闭
+              );
+            } else {
+              // 场景2：计时已结束，手动点击终止（或已在响铃）
+              this.showEndConfirmDialog(
+                '任务提示',
+                '时间到！是否结束任务？',
+                '结束任务',
+                '继续',
+                () => {
+                  NotificationHelper.stopAlarm();
+                  this.currentState = AppState.FINISH_INPUT;
+                },
+                () => {
+                  const mins = parseInt(this.estimatedTime) || 25;
+                  GuardianService.getInstance().startTimer(mins * 60);
+                  NotificationHelper.stopAlarm();
+                }
+              );
+            }
           })
       }
     }.width('100%').height('100%').justifyContent(FlexAlign.Center)

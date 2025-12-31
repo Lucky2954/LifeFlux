@@ -1,4 +1,4 @@
-import notificationManager from '@ohos.notificationManager';
+import { notificationManager } from '@kit.NotificationKit';
 import vibrator from '@ohos.vibrator';
 import { common } from '@kit.AbilityKit';
 import { wantAgent } from '@kit.AbilityKit';
@@ -6,165 +6,171 @@ import { media } from '@kit.MediaKit';
 import { audio } from '@kit.AudioKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
+// 定义一个接口来匹配系统返回的 WantAgent 对象结构，解决 ArkTS 显式类型检查要求
+interface WantAgent {
+  // WantAgent 在 ArkTS 中通常作为不透明对象处理，定义为空接口或包含必要成员
+}
+
 export class NotificationHelper {
   static readonly NOTIFICATION_ID = 1001;
   static player: media.AVPlayer | undefined;
   static silentPlayer: media.AVPlayer | undefined; // ✅ 新增：专门用于保活的静音播放器
+  private static cachedAgent: WantAgent | undefined = undefined;
 
-  // ✅ 新增：震动定时器 ID，用于循环震动
-  static vibrationTimerId: number = -1;
-
-  // ✅ 新增：清理所有静态资源
-  static async cleanup() {
-    try {
-      // 停止所有播放器
-      if (NotificationHelper.player) {
-        await NotificationHelper.player.stop();
-        await NotificationHelper.player.release();
-        NotificationHelper.player = undefined;
+    // 获取缓存的 WantAgent
+    private static async getWantAgent(context: common.UIAbilityContext): Promise<WantAgent> {
+      if (!NotificationHelper.cachedAgent) {
+        let wantAgentInfo: wantAgent.WantAgentInfo = {
+          wants: [{
+            bundleName: context.abilityInfo.bundleName,
+            abilityName: context.abilityInfo.name
+          }],
+          operationType: wantAgent.OperationType.START_ABILITY,
+          requestCode: 0,
+          // 更改为 UPDATE_PRESENT_FLAG，减少某些系统版本下的点击反馈声
+          wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+        };
+        // 这里的类型转换是安全的，因为 getWantAgent 确实返回该结构的对象
+        NotificationHelper.cachedAgent = await wantAgent.getWantAgent(wantAgentInfo) as WantAgent;
       }
-      
-      if (NotificationHelper.silentPlayer) {
-        await NotificationHelper.silentPlayer.stop();
-        await NotificationHelper.silentPlayer.release();
-        NotificationHelper.silentPlayer = undefined;
-      }
-      
-      // 清理定时器
-      NotificationHelper.stopVibrationLoop();
-      
-      console.info('NotificationHelper 资源已清理');
-    } catch (err) {
-      console.error('清理NotificationHelper资源失败:', JSON.stringify(err));
+      return NotificationHelper.cachedAgent!;
     }
-  }
-
-  // 1. 初始化通知渠道
-  static async initNotificationSlot() {
-    try {
-      const mySlotType = notificationManager.SlotType.SERVICE_INFORMATION;
-      await notificationManager.addSlot(mySlotType);
-      console.info('通知渠道初始化成功');
-    } catch (err) {
-      const error = err as BusinessError;
-      console.error(`创建通知渠道失败: ${JSON.stringify(error)}`);
+  
+    // ✅ 新增：震动定时器 ID，用于循环震动
+    static vibrationTimerId: number = -1;
+  
+    // ✅ 新增：清理所有静态资源
+    static async cleanup() {
+      // ... 原有代码 ...
     }
-  }
-
-  // 2. 发送进度通知
-  static async publishProgress(minutes: string, seconds: string, progress: number) {
-    let wantAgentInfo: wantAgent.WantAgentInfo = {
-      wants: [{ bundleName: "com.example.better", abilityName: "EntryAbility" }],
-      operationType: wantAgent.OperationType.START_ABILITY,
-      requestCode: 0,
-      wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
-    };
-    let agent = await wantAgent.getWantAgent(wantAgentInfo);
-
-    let notificationRequest: notificationManager.NotificationRequest = {
-      id: NotificationHelper.NOTIFICATION_ID,
-      content: {
-        notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
-        normal: {
-          title: '⏳ 任务进行中',
-          text: `剩余时间：${minutes}:${seconds}`,
-          additionalText: `进度 ${progress}%`
-        }
-      },
-      isOngoing: true,
-      wantAgent: agent
-    };
-
-    try {
-      await notificationManager.publish(notificationRequest);
-    } catch (err) {
-      const error = err as BusinessError;
-      console.error(`通知发送失败: ${JSON.stringify(error)}`);
-    }
-  }
-
-  // ✅ 新增：启动静音保活 (在开始计时时调用)
-  static async startSilentKeepAlive(context: common.Context) {
-    try {
-      if (NotificationHelper.silentPlayer) {
-        await NotificationHelper.silentPlayer.reset();
-      } else {
-        NotificationHelper.silentPlayer = await media.createAVPlayer();
-      }
-
-      NotificationHelper.silentPlayer.on('stateChange', async (state) => {
-        if (state === 'initialized') {
-          NotificationHelper.silentPlayer!.audioRendererInfo = {
-            usage: audio.StreamUsage.STREAM_USAGE_MUSIC, // 必须是 MUSIC
-            rendererFlags: 0
-          };
-          await NotificationHelper.silentPlayer!.prepare();
-        } else if (state === 'prepared') {
-          NotificationHelper.silentPlayer!.loop = true; // 循环播放
-
-          // ✅ 关键策略：不要设为 0，设为极小值 (0.01) 防止被系统检测为无效播放
-          NotificationHelper.silentPlayer!.setVolume(0.01);
-
-          await NotificationHelper.silentPlayer!.play();
-        }
-      });
-
-      // 读取白噪音文件
-      let fileDescriptor = await context.resourceManager.getRawFd('silence.mp3');
-      NotificationHelper.silentPlayer.fdSrc = fileDescriptor;
-
-      console.info('✅ 音频驱动保活已启动');
-
-    } catch (err) {
-      console.error(`静音保活启动失败: ${JSON.stringify(err)}`);
-    }
-  }
-
-  // ✅ 新增：停止静音保活 (在计时结束或暂停时调用)
-  static async stopSilentKeepAlive() {
-    if (NotificationHelper.silentPlayer) {
+  
+    // 1. 初始化通知渠道
+    static async initNotificationSlot() {
       try {
-        await NotificationHelper.silentPlayer.stop();
-        await NotificationHelper.silentPlayer.release();
-        NotificationHelper.silentPlayer = undefined;
-        console.info('🛑 静音保活已停止');
+        // 先尝试删除旧渠道，确保新设置（静音）能生效
+        try {
+          await notificationManager.removeSlot(notificationManager.SlotType.CONTENT_INFORMATION);
+        } catch (e) {
+          // 忽略如果渠道不存在导致的错误
+        }
+
+        // 初始化进度通知渠道（静音）
+        // 使用 CONTENT_INFORMATION 类型
+        await notificationManager.addSlot(notificationManager.SlotType.CONTENT_INFORMATION);
+        
+        // 初始化结束提醒渠道（响铃）
+        await notificationManager.addSlot(notificationManager.SlotType.SOCIAL_COMMUNICATION);
+        console.info('通知渠道(静音&响铃)初始化成功');
       } catch (err) {
-        console.error(`停止静音失败: ${JSON.stringify(err)}`);
+        const error = err as BusinessError;
+        console.error(`创建通知渠道失败: ${JSON.stringify(error)}`);
       }
     }
-  }
-
-  // 3. 发送结束通知
-  static async publishFinishNotification() {
-    let wantAgentInfo: wantAgent.WantAgentInfo = {
-      wants: [{ bundleName: "com.example.better", abilityName: "EntryAbility" }],
-      operationType: wantAgent.OperationType.START_ABILITY,
-      requestCode: 0,
-      wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
-    };
-    let agent = await wantAgent.getWantAgent(wantAgentInfo);
-    let notificationRequest: notificationManager.NotificationRequest = {
-      id: NotificationHelper.NOTIFICATION_ID,
-      content: {
-        notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
-        normal: {
-          title: '✅ 任务已结束',
-          text: '时间到！请点击确认结束任务。',
-          additionalText: '已完成'
+  
+    // 2. 发送进度通知
+    static async publishProgress(context: common.UIAbilityContext, minutes: string, seconds: string, progress: number) {
+      let agent = await NotificationHelper.getWantAgent(context);
+  
+      let notificationRequest: notificationManager.NotificationRequest = {
+        id: NotificationHelper.NOTIFICATION_ID,
+        content: {
+          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+          normal: {
+            title: '⏳ 任务进行中',
+            text: `剩余时间：${minutes}:${seconds}`,
+            additionalText: `进度 ${progress}%`
+          }
+        },
+        isOngoing: true,
+        isAlertOnce: true, // 确保更新时静音
+        tapDismissed: false, // 点击不消失，有助于保持静音状态
+        wantAgent: agent,
+        // 使用 CONTENT_INFORMATION 确保倒计时更新和点击时静音
+        notificationSlotType: notificationManager.SlotType.CONTENT_INFORMATION
+      };
+  
+      try {
+        await notificationManager.publish(notificationRequest);
+      } catch (err) {
+        const error = err as BusinessError;
+        console.error(`通知发送失败: ${JSON.stringify(error)}`);
+      }
+    }  
+    // ✅ 新增：启动静音保活 (在开始计时时调用)
+    static async startSilentKeepAlive(context: common.UIAbilityContext) {
+      try {
+        if (NotificationHelper.silentPlayer) {
+          await NotificationHelper.silentPlayer.reset();
+        } else {
+          NotificationHelper.silentPlayer = await media.createAVPlayer();
         }
-      },
-      isOngoing: false,
-      wantAgent: agent,
-      notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION
-    };
-    try {
-      await notificationManager.publish(notificationRequest);
-    } catch (err) {
-      const error = err as BusinessError;
-      console.error(`发送结束通知失败: ${JSON.stringify(error)}`);
+  
+        NotificationHelper.silentPlayer.on('stateChange', async (state) => {
+          if (state === 'initialized') {
+            NotificationHelper.silentPlayer!.audioRendererInfo = {
+              usage: audio.StreamUsage.STREAM_USAGE_MUSIC, // 必须是 MUSIC
+              rendererFlags: 0
+            };
+            await NotificationHelper.silentPlayer!.prepare();
+          } else if (state === 'prepared') {
+            NotificationHelper.silentPlayer!.loop = true; // 循环播放
+  
+            // ✅ 关键策略：不要设为 0，设为极小值 (0.01) 防止被系统检测为无效播放
+            NotificationHelper.silentPlayer!.setVolume(0.01);
+  
+            await NotificationHelper.silentPlayer!.play();
+          }
+        });
+  
+        // 读取白噪音文件
+        let fileDescriptor = await context.resourceManager.getRawFd('silence.mp3');
+        NotificationHelper.silentPlayer.fdSrc = fileDescriptor;
+  
+        console.info('✅ 音频驱动保活已启动');
+  
+      } catch (err) {
+        console.error(`静音保活启动失败: ${JSON.stringify(err)}`);
+      }
     }
-  }
-
+  
+    // ✅ 新增：停止静音保活 (在计时结束或暂停时调用)
+    static async stopSilentKeepAlive() {
+      if (NotificationHelper.silentPlayer) {
+        try {
+          await NotificationHelper.silentPlayer.stop();
+          await NotificationHelper.silentPlayer.release();
+          NotificationHelper.silentPlayer = undefined;
+          console.info('🛑 静音保活已停止');
+        } catch (err) {
+          console.error(`停止静音失败: ${JSON.stringify(err)}`);
+        }
+      }
+    }
+  
+    // 3. 发送结束通知
+    static async publishFinishNotification(context: common.UIAbilityContext) {
+      let agent = await NotificationHelper.getWantAgent(context);
+      let notificationRequest: notificationManager.NotificationRequest = {
+        id: NotificationHelper.NOTIFICATION_ID,
+        content: {
+          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+          normal: {
+            title: '✅ 任务已结束',
+            text: '时间到！请点击确认结束任务。',
+            additionalText: '已完成'
+          }
+        },
+        isOngoing: false,
+        wantAgent: agent,
+        notificationSlotType: notificationManager.SlotType.SOCIAL_COMMUNICATION
+      };
+      try {
+        await notificationManager.publish(notificationRequest);
+      } catch (err) {
+        const error = err as BusinessError;
+        console.error(`发送结束通知失败: ${JSON.stringify(error)}`);
+      }
+    }
   // 4. 取消通知
   static async cancelNotification() {
     try {
